@@ -2,7 +2,7 @@ use std::io::{StdinLock, StdoutLock, Write};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::{de::IoRead, StreamDeserializer};
+use serde_json::Deserializer;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Message {
@@ -36,21 +36,30 @@ enum Payload {
     InitOk,
 }
 
-type StrIn<'a> = StreamDeserializer<'a, IoRead<StdinLock<'a>>, Message>;
-
-pub struct Node {
+pub struct Node<'a> {
     next_msg_id: usize,
     node_id: Option<String>,
     node_ids: Option<Vec<String>>,
+    stdout: StdoutLock<'a>,
 }
 
-impl Node {
-    pub fn new() -> Node {
-        return Node {
+impl Node<'_> {
+    pub fn new(stdout: StdoutLock) -> Node {
+        Node {
             next_msg_id: 0,
             node_id: None,
             node_ids: None,
-        };
+            stdout,
+        }
+    }
+
+    pub fn run(&mut self, stdin: StdinLock) -> Result<()> {
+        let strin = Deserializer::from_reader(stdin).into_iter::<Message>();
+        for msg in strin {
+            let msg = msg.context("STDIN could not be deserialized")?;
+            self.handle(msg).context("handler failed")?;
+        }
+        Ok(())
     }
 
     pub fn init(&mut self, node_id: String, node_ids: Vec<String>) -> Result<()> {
@@ -59,27 +68,19 @@ impl Node {
         Ok(())
     }
 
-    pub fn run(&mut self, strin: StrIn, outlock: &mut StdoutLock) -> Result<()> {
-        for input in strin {
-            let input = input.context("STDIN could not be deserialized")?;
-            self.handle(input, outlock).context("handler failed")?;
-        }
-        Ok(())
-    }
-
-    pub fn handle(&mut self, msg: Message, outlock: &mut StdoutLock) -> Result<()> {
+    pub fn handle(&mut self, msg: Message) -> Result<()> {
         match msg.body.payload.clone() {
             Payload::InitOk { .. } => bail!("shouldn't receive init_ok!"),
             Payload::EchoOk { .. } => Ok(()),
-            Payload::Echo { echo } => self.reply(outlock, msg, Payload::EchoOk { echo }),
+            Payload::Echo { echo } => self.reply(msg, Payload::EchoOk { echo }),
             Payload::Init { node_id, node_ids } => {
                 self.init(node_id, node_ids).context("failed to init")?;
-                self.reply(outlock, msg, Payload::InitOk)
+                self.reply(msg, Payload::InitOk)
             }
         }
     }
 
-    fn reply(&mut self, outlock: &mut StdoutLock, msg: Message, payload: Payload) -> Result<()> {
+    fn reply(&mut self, msg: Message, payload: Payload) -> Result<()> {
         let reply = Message {
             src: msg.dest,
             dest: msg.src,
@@ -90,8 +91,8 @@ impl Node {
             },
         };
 
-        serde_json::to_writer(&mut *outlock, &reply).context("serialize reply")?;
-        outlock
+        serde_json::to_writer(&mut self.stdout, &reply).context("serialize reply")?;
+        self.stdout
             .write_all(b"\n")
             .context("add trailing newline to replies")?;
 
