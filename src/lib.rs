@@ -29,6 +29,10 @@ enum Payload {
     EchoOk {
         echo: String,
     },
+    Generate,
+    GenerateOk {
+        id: String,
+    },
     Init {
         node_id: String,
         node_ids: Vec<String>,
@@ -62,22 +66,34 @@ impl Node<'_> {
         Ok(())
     }
 
+    pub fn handle(&mut self, msg: Message) -> Result<()> {
+        match msg.body.payload.clone() {
+            Payload::InitOk { .. } => bail!("shouldn't receive init_ok!"),
+            Payload::EchoOk { .. } => Ok(()),
+            Payload::GenerateOk { .. } => Ok(()),
+            Payload::Echo { echo } => self.reply(msg, Payload::EchoOk { echo }),
+            Payload::Init { node_id, node_ids } => {
+                self.init(node_id, node_ids).context("failed to init")?;
+                self.reply(msg, Payload::InitOk)
+            }
+            Payload::Generate { .. } => self.reply(
+                msg,
+                Payload::GenerateOk {
+                    id: self.generate_id(),
+                },
+            ),
+        }
+    }
+
     pub fn init(&mut self, node_id: String, node_ids: Vec<String>) -> Result<()> {
         self.node_id = Some(node_id);
         self.node_ids = Some(node_ids);
         Ok(())
     }
 
-    pub fn handle(&mut self, msg: Message) -> Result<()> {
-        match msg.body.payload.clone() {
-            Payload::InitOk { .. } => bail!("shouldn't receive init_ok!"),
-            Payload::EchoOk { .. } => Ok(()),
-            Payload::Echo { echo } => self.reply(msg, Payload::EchoOk { echo }),
-            Payload::Init { node_id, node_ids } => {
-                self.init(node_id, node_ids).context("failed to init")?;
-                self.reply(msg, Payload::InitOk)
-            }
-        }
+    pub fn generate_id(&self) -> String {
+        let n = self.node_id.as_ref().expect("generating id before init");
+        format!("{}-{}", n, self.next_msg_id)
     }
 
     fn reply(&mut self, msg: Message, payload: Payload) -> Result<()> {
