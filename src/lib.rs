@@ -1,6 +1,6 @@
 use std::io::{StdinLock, StdoutLock, Write};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
@@ -13,8 +13,8 @@ pub struct Message {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Body {
-    msg_id: Option<usize>,
-    in_reply_to: Option<usize>,
+    msg_id: Option<i32>,
+    in_reply_to: Option<i32>,
     #[serde(flatten)]
     payload: Payload,
 }
@@ -23,6 +23,11 @@ struct Body {
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum Payload {
+    Init {
+        node_id: String,
+        node_ids: Vec<String>,
+    },
+    InitOk,
     Echo {
         echo: String,
     },
@@ -33,15 +38,23 @@ enum Payload {
     GenerateOk {
         id: String,
     },
-    Init {
-        node_id: String,
+    Topology {
         node_ids: Vec<String>,
     },
-    InitOk,
+    TopologyOk,
+    Broadcast {
+        message: i32,
+    },
+    BroadcastOk,
+    Read,
+    ReadOk {
+        messages: Vec<i32>,
+    },
 }
 
 pub struct Node<'a> {
-    next_msg_id: usize,
+    messages: Vec<i32>,
+    next_msg_id: i32,
     node_id: Option<String>,
     node_ids: Option<Vec<String>>,
     stdout: StdoutLock<'a>,
@@ -50,6 +63,7 @@ pub struct Node<'a> {
 impl Node<'_> {
     pub fn new(stdout: StdoutLock) -> Node {
         Node {
+            messages: vec![],
             next_msg_id: 0,
             node_id: None,
             node_ids: None,
@@ -68,9 +82,6 @@ impl Node<'_> {
 
     pub fn handle(&mut self, msg: Message) -> Result<()> {
         match msg.body.payload.clone() {
-            Payload::InitOk { .. } => bail!("shouldn't receive init_ok!"),
-            Payload::EchoOk { .. } => Ok(()),
-            Payload::GenerateOk { .. } => Ok(()),
             Payload::Echo { echo } => self.reply(msg, Payload::EchoOk { echo }),
             Payload::Init { node_id, node_ids } => {
                 self.init(node_id, node_ids).context("failed to init")?;
@@ -82,6 +93,15 @@ impl Node<'_> {
                     id: self.generate_id(),
                 },
             ),
+            Payload::Topology { .. } => self.reply(msg, Payload::Topology { node_ids: vec![] }),
+            Payload::Broadcast { .. } => self.reply(msg, Payload::BroadcastOk),
+            Payload::Read { .. } => self.reply(
+                msg,
+                Payload::ReadOk {
+                    messages: self.messages.clone(),
+                },
+            ),
+            _ => Ok(()), // ignore "oks" from other nodes
         }
     }
 
